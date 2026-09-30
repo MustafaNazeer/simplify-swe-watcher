@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 LISTINGS_URL = (
@@ -34,21 +34,31 @@ def matches(listing):
     )
 
 
-def posted_time(listing):
+def posted_at(listing):
+    """Return (time, date) strings in US Central, or (None, date) for date only listings.
+
+    Simplify stores date only listings as exactly midnight UTC, so those keep their UTC date
+    rather than shifting to the previous evening.
+    """
     ts = listing.get("date_posted")
     if not ts:
-        return "unknown time"
-    return datetime.fromtimestamp(ts, TIMEZONE).strftime("%I:%M%p").lstrip("0")
+        return None, "Date unknown"
+    if ts % 86400 == 0:
+        day = datetime.fromtimestamp(ts, timezone.utc)
+        return None, f"{day:%B} {day.day}, {day.year}"
+    local = datetime.fromtimestamp(ts, TIMEZONE)
+    return local.strftime("%I:%M%p").lstrip("0"), f"{local:%B} {local.day}, {local.year}"
 
 
 def notify(token, chat_id, listing):
     company = listing.get("company_name") or "Unknown company"
     title = listing.get("title") or "Software internship"
-    line = html.escape(f"{company}: {title} @ {posted_time(listing)}")
+    time, date = posted_at(listing)
+    line = f"{company}: {title}" + (f" @ {time}" if time else "")
     url = html.escape(listing.get("url") or "", quote=True)
     payload = {
         "chat_id": chat_id,
-        "text": f'<b>{line}</b>\n<a href="{url}">Tap to apply</a>',
+        "text": f'<b>{html.escape(line)}</b>\n{date}\n<a href="{url}">Tap to apply</a>',
         "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},
     }
