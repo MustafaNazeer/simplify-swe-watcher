@@ -1,10 +1,9 @@
-"""Send an ntfy push for each new Summer 2027 software internship on SimplifyJobs."""
+"""Send a Telegram message for each new Summer 2027 software internship on SimplifyJobs."""
 
-import base64
+import html
 import json
 import os
 import sys
-import urllib.parse
 import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -35,15 +34,6 @@ def matches(listing):
     )
 
 
-def header_value(text):
-    """ntfy accepts RFC 2047 encoded words for non ASCII header values."""
-    try:
-        text.encode("ascii")
-        return text
-    except UnicodeEncodeError:
-        return "=?UTF-8?B?" + base64.b64encode(text.encode("utf-8")).decode("ascii") + "?="
-
-
 def posted_time(listing):
     ts = listing.get("date_posted")
     if not ts:
@@ -51,18 +41,22 @@ def posted_time(listing):
     return datetime.fromtimestamp(ts, TIMEZONE).strftime("%I:%M%p").lstrip("0")
 
 
-def notify(topic, listing):
+def notify(token, chat_id, listing):
     company = listing.get("company_name") or "Unknown company"
     title = listing.get("title") or "Software internship"
-    url = urllib.parse.quote(listing.get("url") or "", safe=":/?#[]@!$&'()*+,;=%~")
+    line = html.escape(f"{company}: {title} @ {posted_time(listing)}")
+    url = html.escape(listing.get("url") or "", quote=True)
+    payload = {
+        "chat_id": chat_id,
+        "text": f'<b>{line}</b>\n<a href="{url}">Tap to apply</a>',
+        "parse_mode": "HTML",
+        "link_preview_options": {"is_disabled": True},
+    }
     req = urllib.request.Request(
-        f"https://ntfy.sh/{topic}",
-        data=b"Tap to apply",
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=json.dumps(payload).encode("utf-8"),
         method="POST",
-        headers={
-            "Title": header_value(f"{company}: {title} @ {posted_time(listing)}"),
-            "Click": url,
-        },
+        headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         resp.read()
@@ -82,9 +76,10 @@ def save_seen(ids):
 
 
 def main():
-    topic = os.environ.get("NTFY_TOPIC", "").strip()
-    if not topic:
-        sys.exit("NTFY_TOPIC is not set")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        sys.exit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
 
     current = [l for l in fetch_listings() if matches(l)]
     current_ids = {str(l["id"]) for l in current}
@@ -102,7 +97,7 @@ def main():
     failures = 0
     for listing in new[:MAX_NOTIFICATIONS]:
         try:
-            notify(topic, listing)
+            notify(token, chat_id, listing)
             print(f"Notified: {listing.get('company_name')} | {listing.get('title')}")
         except Exception as e:
             failures += 1
