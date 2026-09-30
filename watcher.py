@@ -6,6 +6,8 @@ import os
 import sys
 import urllib.parse
 import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 LISTINGS_URL = (
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/"
@@ -14,6 +16,7 @@ LISTINGS_URL = (
 CATEGORIES = ("Software", "Software Engineering")
 TERM = "Summer 2027"
 MAX_NOTIFICATIONS = 20
+TIMEZONE = ZoneInfo("America/Chicago")
 SEEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen.json")
 
 
@@ -41,19 +44,24 @@ def header_value(text):
         return "=?UTF-8?B?" + base64.b64encode(text.encode("utf-8")).decode("ascii") + "?="
 
 
+def posted_time(listing):
+    ts = listing.get("date_posted")
+    if not ts:
+        return "unknown time"
+    return datetime.fromtimestamp(ts, TIMEZONE).strftime("%I:%M%p").lstrip("0")
+
+
 def notify(topic, listing):
     company = listing.get("company_name") or "Unknown company"
     title = listing.get("title") or "Software internship"
-    locations = ", ".join((listing.get("locations") or [])[:3]) or "Location not listed"
     url = urllib.parse.quote(listing.get("url") or "", safe=":/?#[]@!$&'()*+,;=%~")
     req = urllib.request.Request(
         f"https://ntfy.sh/{topic}",
-        data=f"{title}\n{locations}".encode("utf-8"),
+        data=b"Tap to apply",
         method="POST",
         headers={
-            "Title": header_value(f"New SWE intern: {company}"),
+            "Title": header_value(f"{company}: {title} @ {posted_time(listing)}"),
             "Click": url,
-            "Tags": "briefcase",
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
