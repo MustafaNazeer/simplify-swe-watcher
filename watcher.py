@@ -12,7 +12,12 @@ LISTINGS_URL = (
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/"
     "dev/.github/scripts/listings.json"
 )
-CATEGORIES = ("Software", "Software Engineering")
+CATEGORIES = (
+    "Software",
+    "Software Engineering",
+    "AI/ML/Data",
+    "Data Science, AI & Machine Learning",
+)
 TERM = "Summer 2027"
 MAX_NOTIFICATIONS = 20
 TIMEZONE = ZoneInfo("America/Chicago")
