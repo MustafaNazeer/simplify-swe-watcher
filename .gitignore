@@ -1,0 +1,6 @@
+CLAUDE.md
+future-ideas.md
+.claude/
+.claude-plugins/
+.specstory/
+__pycache__/
