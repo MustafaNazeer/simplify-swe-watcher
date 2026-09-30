@@ -1,12 +1,20 @@
 name: watch
 
+# Each run checks every 2 minutes for about 5 hours 40 minutes, then starts the next
+# run itself. The cron schedule is only a backstop in case that chain ever breaks,
+# since GitHub often delays scheduled runs by hours.
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      loop_minutes:
+        description: How long this run keeps checking before starting the next one
+        default: "340"
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: watch
@@ -15,6 +23,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -22,20 +31,34 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run watcher
+      - name: Watch for new listings
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python watcher.py
-
-      - name: Commit seen.json if changed
+          LOOP_MINUTES: ${{ inputs.loop_minutes || '340' }}
+          INTERVAL_SECONDS: 120
         run: |
-          git add seen.json
-          if git diff --cached --quiet; then
-            echo "seen.json unchanged"
-            exit 0
-          fi
           git config user.name "watcher-bot"
           git config user.email "watcher-bot@users.noreply.github.com"
-          git commit -m "Update seen listings"
-          git push
+          end=$((SECONDS + LOOP_MINUTES * 60))
+          while true; do
+            git pull --rebase --quiet || { git rebase --abort 2>/dev/null; echo "Pull failed, using the local copy"; }
+            if ! python watcher.py; then
+              echo "Check failed, trying again next round"
+            fi
+            git add seen.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Update seen listings"
+              git push || echo "Push failed, will retry next round"
+            fi
+            if [ $((SECONDS + INTERVAL_SECONDS)) -ge $end ]; then
+              break
+            fi
+            sleep "$INTERVAL_SECONDS"
+          done
+
+      - name: Start the next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run watch.yml --ref main -R "$GITHUB_REPOSITORY"
