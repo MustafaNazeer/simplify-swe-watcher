@@ -4,6 +4,7 @@ import html
 import json
 import os
 import sys
+import time
 import urllib.request
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -19,7 +20,6 @@ CATEGORIES = (
     "Data Science, AI & Machine Learning",
 )
 TERM = "Summer 2027"
-MAX_NOTIFICATIONS = 20
 TIMEZONE = ZoneInfo("America/Chicago")
 SEEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen.json")
 
@@ -110,15 +110,15 @@ def main():
     print(f"{len(current_ids)} matching listings, {len(new)} new")
 
     failures = 0
-    for listing in new[:MAX_NOTIFICATIONS]:
+    for listing in new:
         try:
             notify(token, chat_id, listing)
             print(f"Notified: {listing.get('company_name')} | {listing.get('title')}")
         except Exception as e:
             failures += 1
             print(f"Failed to notify for {listing.get('id')}: {e}", file=sys.stderr)
-    if len(new) > MAX_NOTIFICATIONS:
-        print(f"Skipped {len(new) - MAX_NOTIFICATIONS} over the per run cap")
+        # Telegram asks bots to stay under about one message per second in a single chat.
+        time.sleep(1)
 
     save_seen(seen | current_ids)
     if failures:
