@@ -1,4 +1,4 @@
-"""Send a Telegram message for each new Summer 2027 software internship on SimplifyJobs."""
+"""Send a Telegram message for each new or reopened software or data internship on SimplifyJobs."""
 
 import html
 import json
@@ -19,9 +19,12 @@ CATEGORIES = (
     "AI/ML/Data",
     "Data Science, AI & Machine Learning",
 )
-TERM = "Summer 2027"
+SUMMER_TERM = "Summer 2027"
+OFF_SEASONS = ("Fall", "Winter", "Spring")
 TIMEZONE = ZoneInfo("America/Chicago")
-SEEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen.json")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SEEN_PATH = os.path.join(HERE, "seen.json")
+CLOSED_PATH = os.path.join(HERE, "closed.json")
 
 
 def fetch_listings():
@@ -30,13 +33,21 @@ def fetch_listings():
         return json.load(resp)
 
 
-def matches(listing):
+def off_season_terms(listing):
+    return [t for t in listing.get("terms") or [] if t.startswith(OFF_SEASONS)]
+
+
+def in_scope(listing):
+    """Category and term match, whether or not the listing is currently open."""
     return (
         listing.get("category") in CATEGORIES
-        and TERM in (listing.get("terms") or [])
-        and listing.get("active") is True
         and listing.get("is_visible") is True
+        and (SUMMER_TERM in (listing.get("terms") or []) or bool(off_season_terms(listing)))
     )
+
+
+def matches(listing):
+    return in_scope(listing) and listing.get("active") is True
 
 
 def posted_at(listing):
@@ -55,11 +66,16 @@ def posted_at(listing):
     return local.strftime("%I:%M%p").lstrip("0"), f"{local:%B} {local.day}, {local.year}"
 
 
-def notify(token, chat_id, listing):
+def notify(token, chat_id, listing, reopened=False):
     company = listing.get("company_name") or "Unknown company"
     title = listing.get("title") or "Software internship"
-    time, date = posted_at(listing)
-    line = f"{company}: {title}" + (f" @ {time}" if time else "")
+    clock, date = posted_at(listing)
+    line = f"{company}: {title}" + (f" @ {clock}" if clock else "")
+    tags = (["Reopened"] if reopened else []) + (
+        [] if SUMMER_TERM in (listing.get("terms") or []) else off_season_terms(listing)
+    )
+    if tags:
+        date = f"{', '.join(tags)}, posted {date}"
     url = html.escape(listing.get("url") or "", quote=True)
     payload = {
         "chat_id": chat_id,
@@ -77,15 +93,15 @@ def notify(token, chat_id, listing):
         resp.read()
 
 
-def load_seen():
-    if not os.path.exists(SEEN_PATH):
+def load_ids(path):
+    if not os.path.exists(path):
         return None
-    with open(SEEN_PATH, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return set(json.load(f))
 
 
-def save_seen(ids):
-    with open(SEEN_PATH, "w", encoding="utf-8") as f:
+def save_ids(path, ids):
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(sorted(ids), f, indent=0)
         f.write("\n")
 
@@ -96,31 +112,47 @@ def main():
     if not token or not chat_id:
         sys.exit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
 
-    current = [l for l in fetch_listings() if matches(l)]
+    scoped = [l for l in fetch_listings() if in_scope(l)]
+    current = [l for l in scoped if l.get("active") is True]
     current_ids = {str(l["id"]) for l in current}
-    seen = load_seen()
+    closed_now = {str(l["id"]) for l in scoped if l.get("active") is not True}
+    seen = load_ids(SEEN_PATH)
+    closed = load_ids(CLOSED_PATH)
 
-    if seen is None:
-        save_seen(current_ids)
-        print(f"Seeded seen.json with {len(current_ids)} listings, no notifications sent")
+    if seen is None or closed is None:
+        # First run, or the first run after closed.json was introduced: record the current
+        # state without sending anything, so existing listings do not flood the chat.
+        save_ids(SEEN_PATH, (seen or set()) | current_ids)
+        save_ids(CLOSED_PATH, closed_now)
+        print(f"Seeded {len(current_ids)} open and {len(closed_now)} closed listings, no notifications sent")
         return
 
-    new = [l for l in current if str(l["id"]) not in seen]
-    new.sort(key=lambda l: l.get("date_posted") or 0)
-    print(f"{len(current_ids)} matching listings, {len(new)} new")
+    to_send = [
+        (l, str(l["id"]) in closed)
+        for l in current
+        if str(l["id"]) not in seen or str(l["id"]) in closed
+    ]
+    to_send.sort(key=lambda item: item[0].get("date_posted") or 0)
+    reopened_count = sum(1 for _, reopened in to_send if reopened)
+    print(
+        f"{len(current_ids)} open listings, {len(to_send) - reopened_count} new, "
+        f"{reopened_count} reopened"
+    )
 
     failures = 0
-    for listing in new:
+    for listing, reopened in to_send:
         try:
-            notify(token, chat_id, listing)
-            print(f"Notified: {listing.get('company_name')} | {listing.get('title')}")
+            notify(token, chat_id, listing, reopened)
+            label = "Notified (reopened)" if reopened else "Notified"
+            print(f"{label}: {listing.get('company_name')} | {listing.get('title')}")
         except Exception as e:
             failures += 1
             print(f"Failed to notify for {listing.get('id')}: {e}", file=sys.stderr)
         # Telegram asks bots to stay under about one message per second in a single chat.
         time.sleep(1)
 
-    save_seen(seen | current_ids)
+    save_ids(SEEN_PATH, seen | current_ids)
+    save_ids(CLOSED_PATH, closed_now)
     if failures:
         print(f"{failures} notifications failed", file=sys.stderr)
 

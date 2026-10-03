@@ -46,7 +46,7 @@ jobs:
             if ! python watcher.py; then
               echo "Check failed, trying again next round"
             fi
-            git add seen.json
+            git add seen.json closed.json
             if ! git diff --cached --quiet; then
               git commit -m "Update seen listings"
               git push || echo "Push failed, will retry next round"
