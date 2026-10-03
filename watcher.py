@@ -79,7 +79,7 @@ def notify(token, chat_id, listing, reopened=False):
     url = html.escape(listing.get("url") or "", quote=True)
     payload = {
         "chat_id": chat_id,
-        "text": f'<b>{html.escape(line)}</b>\n{date}\n<a href="{url}">Tap to apply</a>',
+        "text": f'<b>{html.escape(line)}</b>\n{html.escape(date)}\n<a href="{url}">Tap to apply</a>',
         "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},
     }
