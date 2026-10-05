@@ -37,11 +37,26 @@ def off_season_terms(listing):
     return [t for t in listing.get("terms") or [] if t.startswith(OFF_SEASONS)]
 
 
+def is_graduate_only(listing):
+    """Same rule Simplify uses for the graduation cap marker in its README."""
+    degrees = [d.lower() for d in listing.get("degrees") or []]
+    if any(d in ("master's", "phd", "mba") for d in degrees) and not any(
+        d in ("bachelor's", "associate's") for d in degrees
+    ):
+        return True
+    title = (listing.get("title") or "").lower()
+    return any(
+        term in title
+        for term in ("master's", "masters", "master", "mba", "phd", "ph.d", "doctorate", "doctoral")
+    )
+
+
 def in_scope(listing):
     """Category and term match, whether or not the listing is currently open."""
     return (
         listing.get("category") in CATEGORIES
         and listing.get("is_visible") is True
+        and not is_graduate_only(listing)
         and (SUMMER_TERM in (listing.get("terms") or []) or bool(off_season_terms(listing)))
     )
 
