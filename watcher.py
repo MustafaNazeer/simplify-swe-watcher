@@ -22,6 +22,11 @@ CATEGORIES = (
 SUMMER_TERM = "Summer 2027"
 OFF_SEASONS = ("Fall", "Winter", "Spring")
 TIMEZONE = ZoneInfo("America/Chicago")
+README_URL = "https://github.com/SimplifyJobs/Summer2027-Internships"
+SUMMARY_MAX_LINES = 40
+# Telegram rejects messages whose visible text (links not counted) is over 4096 characters;
+# leave room for the closing line.
+SUMMARY_MAX_CHARS = 3800
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEEN_PATH = os.path.join(HERE, "seen.json")
 CLOSED_PATH = os.path.join(HERE, "closed.json")
@@ -81,20 +86,24 @@ def posted_at(listing):
     return local.strftime("%I:%M%p").lstrip("0"), f"{local:%B} {local.day}, {local.year}"
 
 
-def notify(token, chat_id, listing, reopened=False):
-    company = listing.get("company_name") or "Unknown company"
-    title = listing.get("title") or "Software internship"
-    clock, date = posted_at(listing)
-    line = f"{company}: {title}" + (f" @ {clock}" if clock else "")
-    tags = (["Reopened"] if reopened else []) + (
-        [] if SUMMER_TERM in (listing.get("terms") or []) else off_season_terms(listing)
-    )
-    if tags:
-        date = f"{', '.join(tags)}, posted {date}"
-    url = html.escape(listing.get("url") or "", quote=True)
+def short_date(listing):
+    """Posted date like "Aug 3", with the year added when it is not the current year."""
+    ts = listing.get("date_posted")
+    if not ts:
+        return "date unknown"
+    day = datetime.fromtimestamp(ts, timezone.utc if ts % 86400 == 0 else TIMEZONE)
+    text = f"{day:%b} {day.day}"
+    return text if day.year == datetime.now(TIMEZONE).year else f"{text}, {day.year}"
+
+
+def listing_terms(listing):
+    return [] if SUMMER_TERM in (listing.get("terms") or []) else off_season_terms(listing)
+
+
+def send_message(token, chat_id, text):
     payload = {
         "chat_id": chat_id,
-        "text": f'<b>{html.escape(line)}</b>\n{html.escape(date)}\n<a href="{url}">Tap to apply</a>',
+        "text": text,
         "parse_mode": "HTML",
         "link_preview_options": {"is_disabled": True},
     }
@@ -106,6 +115,45 @@ def notify(token, chat_id, listing, reopened=False):
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         resp.read()
+
+
+def notify(token, chat_id, listing):
+    company = listing.get("company_name") or "Unknown company"
+    title = listing.get("title") or "Software internship"
+    clock, date = posted_at(listing)
+    line = f"{company}: {title}" + (f" @ {clock}" if clock else "")
+    terms = listing_terms(listing)
+    if terms:
+        date = f"{', '.join(terms)}, posted {date}"
+    url = html.escape(listing.get("url") or "", quote=True)
+    send_message(
+        token,
+        chat_id,
+        f'<b>{html.escape(line)}</b>\n{html.escape(date)}\n<a href="{url}">Tap to apply</a>',
+    )
+
+
+def reopened_summary(listings):
+    """One message for a batch of reopened listings, newest first, trimmed to fit Telegram."""
+    listings = sorted(listings, key=lambda l: l.get("date_posted") or 0, reverse=True)
+    header = f"Reopened: {len(listings)} listing{'s' if len(listings) != 1 else ''}"
+    lines = [f"<b>{header}</b>"]
+    length = len(header)
+    shown = 0
+    for listing in listings[:SUMMARY_MAX_LINES]:
+        company = listing.get("company_name") or "Unknown company"
+        title = listing.get("title") or "Software internship"
+        details = ", ".join([short_date(listing)] + listing_terms(listing))
+        url = html.escape(listing.get("url") or "", quote=True)
+        visible = f"{company}: {title} ({details})"
+        if length + len(visible) + 1 > SUMMARY_MAX_CHARS:
+            break
+        lines.append(f'<a href="{url}">{html.escape(f"{company}: {title}")}</a> ({html.escape(details)})')
+        length += len(visible) + 1
+        shown += 1
+    if shown < len(listings):
+        lines.append(f'...and {len(listings) - shown} more on <a href="{README_URL}">Simplify\'s list</a>')
+    return "\n".join(lines)
 
 
 def load_ids(path):
@@ -142,29 +190,30 @@ def main():
         print(f"Seeded {len(current_ids)} open and {len(closed_now)} closed listings, no notifications sent")
         return
 
-    to_send = [
-        (l, str(l["id"]) in closed)
-        for l in current
-        if str(l["id"]) not in seen or str(l["id"]) in closed
-    ]
-    to_send.sort(key=lambda item: item[0].get("date_posted") or 0)
-    reopened_count = sum(1 for _, reopened in to_send if reopened)
-    print(
-        f"{len(current_ids)} open listings, {len(to_send) - reopened_count} new, "
-        f"{reopened_count} reopened"
-    )
+    reopened = [l for l in current if str(l["id"]) in closed]
+    new = [l for l in current if str(l["id"]) not in seen and str(l["id"]) not in closed]
+    new.sort(key=lambda l: l.get("date_posted") or 0)
+    print(f"{len(current_ids)} open listings, {len(new)} new, {len(reopened)} reopened")
 
     failures = 0
-    for listing, reopened in to_send:
+    for listing in new:
         try:
-            notify(token, chat_id, listing, reopened)
-            label = "Notified (reopened)" if reopened else "Notified"
-            print(f"{label}: {listing.get('company_name')} | {listing.get('title')}")
+            notify(token, chat_id, listing)
+            print(f"Notified: {listing.get('company_name')} | {listing.get('title')}")
         except Exception as e:
             failures += 1
             print(f"Failed to notify for {listing.get('id')}: {e}", file=sys.stderr)
         # Telegram asks bots to stay under about one message per second in a single chat.
         time.sleep(1)
+
+    if reopened:
+        try:
+            send_message(token, chat_id, reopened_summary(reopened))
+            for listing in reopened:
+                print(f"Notified (reopened): {listing.get('company_name')} | {listing.get('title')}")
+        except Exception as e:
+            failures += 1
+            print(f"Failed to send the reopened summary: {e}", file=sys.stderr)
 
     save_ids(SEEN_PATH, seen | current_ids)
     save_ids(CLOSED_PATH, closed_now)
