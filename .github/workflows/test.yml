@@ -1,0 +1,44 @@
+name: test
+
+# Sends one Telegram message in the normal format for the newest open listing that has pay
+# listed and clears the pay bar. It does not change seen.json or closed.json.
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Send a test message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'EOF'
+          import os, sys, time
+          import watcher as w
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
+          chat_id = os.environ["TELEGRAM_CHAT_ID"].strip()
+          listings = sorted(
+              (l for l in w.fetch_listings() if w.matches(l)),
+              key=lambda l: l.get("date_posted") or 0,
+              reverse=True,
+          )
+          for listing in listings[:30]:
+              pay = w.fetch_pay(listing)
+              if pay is not None and w.pay_ok(pay):
+                  w.notify(token, chat_id, listing, pay)
+                  print(f"Sent: {listing.get('company_name')} | {listing.get('title')} | {w.pay_text(pay)}")
+                  break
+              time.sleep(0.5)
+          else:
+              sys.exit("No recent listing with pay above the bar was found")
+          EOF
