@@ -128,7 +128,7 @@ def matches(listing):
 
 
 def posted_at(listing):
-    """Return (time, date) in US Central, like ("2:14PM", "Nov. 27th"), or (None, date) for
+    """Return (time, date) in US Central, like ("2:14PM", "November 27th"), or (None, date) for
     date only listings. The year is added when it is not the current year.
 
     Simplify stores date only listings as exactly midnight UTC, so those keep their UTC date
@@ -140,17 +140,10 @@ def posted_at(listing):
     date_only = ts % 86400 == 0
     day = datetime.fromtimestamp(ts, timezone.utc if date_only else TIMEZONE)
     suffix = "th" if 11 <= day.day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day.day % 10, "th")
-    date = f"{day:%b}. {day.day}{suffix}"
+    date = f"{day:%B} {day.day}{suffix}"
     if day.year != datetime.now(TIMEZONE).year:
         date += f", {day.year}"
     return (None if date_only else day.strftime("%I:%M%p").lstrip("0")), date
-
-
-def headline(listing):
-    """Like "Atoms @ 2:14PM, Nov. 27th", or "Atoms @ Nov. 27th" when only the date is known."""
-    clock, date = posted_at(listing)
-    when = f"{clock}, {date}" if clock else date
-    return listing.get("company_name") or "Unknown company", f" @ {when}"
 
 
 def send_message(token, chat_id, text):
@@ -171,13 +164,16 @@ def send_message(token, chat_id, text):
 
 
 def notify(token, chat_id, listing, pay):
-    company, when = headline(listing)
+    """Company linked to the posting and the time posted, then the date, then the pay."""
+    company = listing.get("company_name") or "Unknown company"
+    clock, date = posted_at(listing)
     url = html.escape(listing.get("url") or "", quote=True)
+    at = f" @ {clock}" if clock else ""
     send_message(
         token,
         chat_id,
-        f'<b><a href="{url}">{html.escape(company)}</a>{html.escape(when)}</b>\n'
-        f"{html.escape(pay_text(pay))}",
+        f'<b><a href="{url}">{html.escape(company)}</a>{html.escape(at)}</b>\n'
+        f"{html.escape(date)}\n{html.escape(pay_text(pay))}",
     )
 
 
@@ -189,8 +185,10 @@ def reopened_summary(listings, pays):
     length = len(header)
     shown = 0
     for listing in listings[:SUMMARY_MAX_LINES]:
-        company, when = headline(listing)
-        details = f"{when}, {pay_text(pays[str(listing['id'])])}"
+        company = listing.get("company_name") or "Unknown company"
+        clock, date = posted_at(listing)
+        details = f" @ {clock}, " if clock else ", "
+        details += f"{date}, {pay_text(pays[str(listing['id'])])}"
         url = html.escape(listing.get("url") or "", quote=True)
         if length + len(company + details) + 1 > SUMMARY_MAX_CHARS:
             break
