@@ -3,6 +3,7 @@
 import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -27,6 +28,18 @@ SUMMARY_MAX_LINES = 40
 # Telegram rejects messages whose visible text (links not counted) is over 4096 characters;
 # leave room for the closing line.
 SUMMARY_MAX_CHARS = 3800
+JOB_PAGE_URL = "https://simplify.jobs/p/{}"
+# Listings whose pay is listed must reach this, in USD per year, at PAY_PERCENTILE of the way
+# from the bottom of their range to the top. Listings with no pay listed are still sent.
+MIN_YEARLY_PAY = 80_000
+PAY_PERCENTILE = 0.4
+HOURS_PER_YEAR = 2080
+# Simplify uses salary_period 1 for hourly. When the period is missing, an amount above this
+# is taken to be yearly and anything at or below it hourly.
+YEARLY_AMOUNT_FLOOR = 1000
+# Approximate rates to USD, only used to compare against MIN_YEARLY_PAY. Pay in any other
+# currency counts as not listed.
+USD_RATES = {"USD": 1.0, "CAD": 0.72, "GBP": 1.33, "EUR": 1.15}
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEEN_PATH = os.path.join(HERE, "seen.json")
 CLOSED_PATH = os.path.join(HERE, "closed.json")
@@ -36,6 +49,50 @@ def fetch_listings():
     req = urllib.request.Request(LISTINGS_URL, headers={"User-Agent": "simplify-swe-watcher"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.load(resp)
+
+
+def fetch_pay(listing):
+    """Yearly USD (low, high, currency) from the listing's Simplify page, or None if not listed."""
+    req = urllib.request.Request(
+        JOB_PAGE_URL.format(listing["id"]), headers={"User-Agent": "Mozilla/5.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            page = resp.read().decode("utf-8", errors="replace")
+        match = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', page, re.S
+        )
+        job = json.loads(match.group(1))["props"]["pageProps"]["jobPosting"]
+    except Exception as e:
+        print(f"Could not read pay for {listing.get('id')}: {e}", file=sys.stderr)
+        return None
+    low, high = job.get("min_salary"), job.get("max_salary")
+    currency = job.get("currency_type") or "USD"
+    if (low is None and high is None) or currency not in USD_RATES:
+        return None
+    low, high = float(low if low is not None else high), float(high if high is not None else low)
+    hourly = job.get("salary_period") == 1 or (
+        job.get("salary_period") is None and high <= YEARLY_AMOUNT_FLOOR
+    )
+    scale = (HOURS_PER_YEAR if hourly else 1) * USD_RATES[currency]
+    return low * scale, high * scale, currency
+
+
+def pay_ok(pay):
+    if pay is None:
+        return True
+    low, high, _ = pay
+    return low + PAY_PERCENTILE * (high - low) >= MIN_YEARLY_PAY
+
+
+def pay_text(pay):
+    """Like "~$56K to $104K/yr", with the original currency noted when it was converted."""
+    if pay is None:
+        return "Pay not listed"
+    low, high, currency = pay
+    low_k, high_k = round(low / 1000), round(high / 1000)
+    text = f"~${low_k}K/yr" if low_k == high_k else f"~${low_k}K to ${high_k}K/yr"
+    return text if currency == "USD" else f"{text} (from {currency})"
 
 
 def off_season_terms(listing):
@@ -117,7 +174,7 @@ def send_message(token, chat_id, text):
         resp.read()
 
 
-def notify(token, chat_id, listing):
+def notify(token, chat_id, listing, pay):
     company = listing.get("company_name") or "Unknown company"
     title = listing.get("title") or "Software internship"
     clock, date = posted_at(listing)
@@ -129,11 +186,12 @@ def notify(token, chat_id, listing):
     send_message(
         token,
         chat_id,
-        f'<b>{html.escape(line)}</b>\n{html.escape(date)}\n<a href="{url}">Tap to apply</a>',
+        f'<b>{html.escape(line)}</b>\n{html.escape(date)}\n{html.escape(pay_text(pay))}\n'
+        f'<a href="{url}">Tap to apply</a>',
     )
 
 
-def reopened_summary(listings):
+def reopened_summary(listings, pays):
     """One message for a batch of reopened listings, newest first, trimmed to fit Telegram."""
     listings = sorted(listings, key=lambda l: l.get("date_posted") or 0, reverse=True)
     header = f"Reopened: {len(listings)} listing{'s' if len(listings) != 1 else ''}"
@@ -143,7 +201,9 @@ def reopened_summary(listings):
     for listing in listings[:SUMMARY_MAX_LINES]:
         company = listing.get("company_name") or "Unknown company"
         title = listing.get("title") or "Software internship"
-        details = ", ".join([short_date(listing)] + listing_terms(listing))
+        details = ", ".join(
+            [short_date(listing)] + listing_terms(listing) + [pay_text(pays[str(listing["id"])])]
+        )
         url = html.escape(listing.get("url") or "", quote=True)
         visible = f"{company}: {title} ({details})"
         if length + len(visible) + 1 > SUMMARY_MAX_CHARS:
@@ -193,12 +253,26 @@ def main():
     reopened = [l for l in current if str(l["id"]) in closed]
     new = [l for l in current if str(l["id"]) not in seen and str(l["id"]) not in closed]
     new.sort(key=lambda l: l.get("date_posted") or 0)
-    print(f"{len(current_ids)} open listings, {len(new)} new, {len(reopened)} reopened")
+
+    # Pay is only on each listing's own page, so it is fetched just for listings about to be
+    # sent. Listings below the pay bar are still recorded as seen so they are not fetched again.
+    pays = {}
+    for listing in new + reopened:
+        pays[str(listing["id"])] = fetch_pay(listing)
+        time.sleep(0.5)
+    low_pay = [l for l in new + reopened if not pay_ok(pays[str(l["id"])])]
+    for listing in low_pay:
+        print(f"Skipped for pay ({pay_text(pays[str(listing['id'])])}): "
+              f"{listing.get('company_name')} | {listing.get('title')}")
+    new = [l for l in new if pay_ok(pays[str(l["id"])])]
+    reopened = [l for l in reopened if pay_ok(pays[str(l["id"])])]
+    print(f"{len(current_ids)} open listings, {len(new)} new, {len(reopened)} reopened, "
+          f"{len(low_pay)} below the pay bar")
 
     failures = 0
     for listing in new:
         try:
-            notify(token, chat_id, listing)
+            notify(token, chat_id, listing, pays[str(listing["id"])])
             print(f"Notified: {listing.get('company_name')} | {listing.get('title')}")
         except Exception as e:
             failures += 1
@@ -208,7 +282,7 @@ def main():
 
     if reopened:
         try:
-            send_message(token, chat_id, reopened_summary(reopened))
+            send_message(token, chat_id, reopened_summary(reopened, pays))
             for listing in reopened:
                 print(f"Notified (reopened): {listing.get('company_name')} | {listing.get('title')}")
         except Exception as e:
