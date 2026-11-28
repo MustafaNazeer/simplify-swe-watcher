@@ -86,12 +86,12 @@ def pay_ok(pay):
 
 
 def pay_text(pay):
-    """Like "~$56K to $104K/yr", with the original currency noted when it was converted."""
+    """Like "$56K to $104K/yr", with the original currency noted when it was converted."""
     if pay is None:
         return "Pay not listed"
     low, high, currency = pay
     low_k, high_k = round(low / 1000), round(high / 1000)
-    text = f"~${low_k}K/yr" if low_k == high_k else f"~${low_k}K to ${high_k}K/yr"
+    text = f"${low_k}K/yr" if low_k == high_k else f"${low_k}K to ${high_k}K/yr"
     return text if currency == "USD" else f"{text} (from {currency})"
 
 
