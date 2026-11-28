@@ -164,7 +164,7 @@ def send_message(token, chat_id, text):
 
 
 def notify(token, chat_id, listing, pay):
-    """Company linked to the posting and the time posted, then the date, then the pay."""
+    """Company linked to the posting and the time posted, then the pay, then the date."""
     company = listing.get("company_name") or "Unknown company"
     clock, date = posted_at(listing)
     url = html.escape(listing.get("url") or "", quote=True)
@@ -173,7 +173,7 @@ def notify(token, chat_id, listing, pay):
         token,
         chat_id,
         f'<b><a href="{url}">{html.escape(company)}</a>{html.escape(at)}</b>\n'
-        f"{html.escape(date)}\n{html.escape(pay_text(pay))}",
+        f"{html.escape(pay_text(pay))}\n{html.escape(date)}",
     )
 
 
@@ -188,7 +188,7 @@ def reopened_summary(listings, pays):
         company = listing.get("company_name") or "Unknown company"
         clock, date = posted_at(listing)
         details = f" @ {clock}, " if clock else ", "
-        details += f"{date}, {pay_text(pays[str(listing['id'])])}"
+        details += f"{pay_text(pays[str(listing['id'])])}, {date}"
         url = html.escape(listing.get("url") or "", quote=True)
         if length + len(company + details) + 1 > SUMMARY_MAX_CHARS:
             break
