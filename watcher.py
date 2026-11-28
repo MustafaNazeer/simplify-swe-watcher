@@ -164,16 +164,24 @@ def send_message(token, chat_id, text):
 
 
 def notify(token, chat_id, listing, pay):
-    """Company linked to the posting and the time posted, then the pay, then the date."""
-    company = listing.get("company_name") or "Unknown company"
-    clock, date = posted_at(listing)
+    """Two lines, so phone notification previews show it whole: the company linked to the
+    posting with the time and date posted, then the pay."""
+    company, when = posted_line(listing)
     url = html.escape(listing.get("url") or "", quote=True)
-    at = f" @ {clock}" if clock else ""
     send_message(
         token,
         chat_id,
-        f'<b><a href="{url}">{html.escape(company)}</a>{html.escape(at)}</b>\n'
-        f"{html.escape(pay_text(pay))}\n{html.escape(date)}",
+        f'<b><a href="{url}">{html.escape(company)}</a>{html.escape(when)}</b>\n'
+        f"{html.escape(pay_text(pay))}",
+    )
+
+
+def posted_line(listing):
+    """Like ("Atoms", " @ 2:14PM, November 27th"), or " @ November 27th" when only the date is known."""
+    clock, date = posted_at(listing)
+    return (
+        listing.get("company_name") or "Unknown company",
+        f" @ {clock}, {date}" if clock else f" @ {date}",
     )
 
 
@@ -185,10 +193,8 @@ def reopened_summary(listings, pays):
     length = len(header)
     shown = 0
     for listing in listings[:SUMMARY_MAX_LINES]:
-        company = listing.get("company_name") or "Unknown company"
-        clock, date = posted_at(listing)
-        details = f" @ {clock}, " if clock else ", "
-        details += f"{pay_text(pays[str(listing['id'])])}, {date}"
+        company, when = posted_line(listing)
+        details = f"{when}, {pay_text(pays[str(listing['id'])])}"
         url = html.escape(listing.get("url") or "", quote=True)
         if length + len(company + details) + 1 > SUMMARY_MAX_CHARS:
             break
