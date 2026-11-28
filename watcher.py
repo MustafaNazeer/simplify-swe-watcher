@@ -128,33 +128,29 @@ def matches(listing):
 
 
 def posted_at(listing):
-    """Return (time, date) strings in US Central, or (None, date) for date only listings.
+    """Return (time, date) in US Central, like ("2:14PM", "Nov. 27th"), or (None, date) for
+    date only listings. The year is added when it is not the current year.
 
     Simplify stores date only listings as exactly midnight UTC, so those keep their UTC date
     rather than shifting to the previous evening.
     """
     ts = listing.get("date_posted")
     if not ts:
-        return None, "Date unknown"
-    if ts % 86400 == 0:
-        day = datetime.fromtimestamp(ts, timezone.utc)
-        return None, f"{day:%B} {day.day}, {day.year}"
-    local = datetime.fromtimestamp(ts, TIMEZONE)
-    return local.strftime("%I:%M%p").lstrip("0"), f"{local:%B} {local.day}, {local.year}"
+        return None, "date unknown"
+    date_only = ts % 86400 == 0
+    day = datetime.fromtimestamp(ts, timezone.utc if date_only else TIMEZONE)
+    suffix = "th" if 11 <= day.day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day.day % 10, "th")
+    date = f"{day:%b}. {day.day}{suffix}"
+    if day.year != datetime.now(TIMEZONE).year:
+        date += f", {day.year}"
+    return (None if date_only else day.strftime("%I:%M%p").lstrip("0")), date
 
 
-def short_date(listing):
-    """Posted date like "Aug 3", with the year added when it is not the current year."""
-    ts = listing.get("date_posted")
-    if not ts:
-        return "date unknown"
-    day = datetime.fromtimestamp(ts, timezone.utc if ts % 86400 == 0 else TIMEZONE)
-    text = f"{day:%b} {day.day}"
-    return text if day.year == datetime.now(TIMEZONE).year else f"{text}, {day.year}"
-
-
-def listing_terms(listing):
-    return [] if SUMMER_TERM in (listing.get("terms") or []) else off_season_terms(listing)
+def headline(listing):
+    """Like "Atoms @ 2:14PM, Nov. 27th", or "Atoms @ Nov. 27th" when only the date is known."""
+    clock, date = posted_at(listing)
+    when = f"{clock}, {date}" if clock else date
+    return listing.get("company_name") or "Unknown company", f" @ {when}"
 
 
 def send_message(token, chat_id, text):
@@ -175,19 +171,13 @@ def send_message(token, chat_id, text):
 
 
 def notify(token, chat_id, listing, pay):
-    company = listing.get("company_name") or "Unknown company"
-    title = listing.get("title") or "Software internship"
-    clock, date = posted_at(listing)
-    line = f"{company}: {title}" + (f" @ {clock}" if clock else "")
-    terms = listing_terms(listing)
-    if terms:
-        date = f"{', '.join(terms)}, posted {date}"
+    company, when = headline(listing)
     url = html.escape(listing.get("url") or "", quote=True)
     send_message(
         token,
         chat_id,
-        f'<b>{html.escape(line)}</b>\n{html.escape(date)}\n{html.escape(pay_text(pay))}\n'
-        f'<a href="{url}">Tap to apply</a>',
+        f'<b><a href="{url}">{html.escape(company)}</a>{html.escape(when)}</b>\n'
+        f"{html.escape(pay_text(pay))}",
     )
 
 
@@ -199,17 +189,13 @@ def reopened_summary(listings, pays):
     length = len(header)
     shown = 0
     for listing in listings[:SUMMARY_MAX_LINES]:
-        company = listing.get("company_name") or "Unknown company"
-        title = listing.get("title") or "Software internship"
-        details = ", ".join(
-            [short_date(listing)] + listing_terms(listing) + [pay_text(pays[str(listing["id"])])]
-        )
+        company, when = headline(listing)
+        details = f"{when}, {pay_text(pays[str(listing['id'])])}"
         url = html.escape(listing.get("url") or "", quote=True)
-        visible = f"{company}: {title} ({details})"
-        if length + len(visible) + 1 > SUMMARY_MAX_CHARS:
+        if length + len(company + details) + 1 > SUMMARY_MAX_CHARS:
             break
-        lines.append(f'<a href="{url}">{html.escape(f"{company}: {title}")}</a> ({html.escape(details)})')
-        length += len(visible) + 1
+        lines.append(f'<a href="{url}">{html.escape(company)}</a>{html.escape(details)}')
+        length += len(company + details) + 1
         shown += 1
     if shown < len(listings):
         lines.append(f'...and {len(listings) - shown} more on <a href="{README_URL}">Simplify\'s list</a>')
